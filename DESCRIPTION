@@ -1,0 +1,23 @@
+Package: microbiomeInteractions
+Type: Package
+Title: Statistical Inference of Interactions Within Microbiomes
+Version: 0.1
+Authors@R: person("Mani", "Arumugam", email = "arumugam@sund.ku.dk",
+                  role = c("aut", "cre"))
+Description: This package infers interactions between pairs of entities in 
+    microbiomes. Entities here could refer to taxonomic entities or functional
+    entities.
+Depends: R (>= 3.5.3)
+License: MIT license
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 6.1.1
+Suggests: 
+    knitr,
+    rmarkdown,
+    phyloseq
+VignetteBuilder: knitr
+Imports: 
+    dplyr,
+    pracma,
+    plyr
