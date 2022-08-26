@@ -169,8 +169,8 @@ get_single_rank_metaphlan <- function(p, tax_rank) {
 #' \dontrun{
 #' library(ggplot2)
 #' 
-#' t1="s__Coprococcus_sp_ART55_1"
-#' t2="s__Anaerostipes_unclassified"
+#' t1="Blautia coccoides"
+#' t2="Firmicutes bacterium CAG:95"
 #'
 #' plot_interaction_phyloseq(ps_list, t1, t2)
 #' }
