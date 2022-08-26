@@ -44,16 +44,12 @@ process_phyloseq_for_pairwise_interactions <- function(p, .parallel = FALSE) {
   
   # Assign useful taxa names for x
   
-  rownames(x) <- paste0(t[,"Phylum"], "::", t[,"Species"])
+  rownames(x) <- paste0(t[,"phylum"], "::", t[,"species"])
   
   # Make sure that there isnt any invalid data. THis happens in DN-metaHIT in CRC-meta
   
   valid_samples = which(!is.na(colSums(x)))
   x <- x[ , valid_samples]
-  
-  # Convert into 0-1 presence/absence matrix, since that's all we need
-  
-  x[x>0] <- 1
   
   return(calculate_pairwise_1(x, .parallel = .parallel))
   #return(calculate_pairwise_2(x, x))
@@ -156,3 +152,51 @@ get_single_rank_metaphlan <- function(p, tax_rank) {
   
 }
 
+################################
+# Plot interactions
+################################
+
+#' Plot interaction between two taxa as scatterplot
+#'
+#' @param ps_list list of phyloseq objects
+#' @param t1 taxon 1
+#' @param t2 taxon 2
+#'
+#' @return ggplot2 object
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' library(ggplot2)
+#' 
+#' t1="s__Coprococcus_sp_ART55_1"
+#' t2="s__Anaerostipes_unclassified"
+#'
+#' plot_interaction_phyloseq(ps_list, t1, t2)
+#' }
+plot_interaction_phyloseq <- function(ps_list, t1, t2) {
+  studies <- names(ps_list)
+  df <- data.frame(double(), double(), character())
+  for (study in studies) {
+    p <- ps_list[[study]]
+    t <- tax_table(p)
+    if (length(grep(t1, row.names(t), fixed=TRUE)) == 0 |
+        length(grep(t2, row.names(t), fixed=TRUE)) == 0) {
+      next
+    }
+    ab <- otu_table(p)
+    ab <- as.data.frame(t(ab[c(t1, t2), ]))
+    ab <- ab[ab[ , 1]>0 | ab[ , 2]>0, ]
+    ab[ab==0] <- 1e-4
+    ab <- log10(ab)
+    ab$study <- study
+    df <- rbind(df, ab)
+  }
+  names(df) <- c(t1, t2, "study")
+  g <- ggplot(df, aes(x=get(t1), y=get(t2))) + 
+    geom_point() +
+    xlab(t1) +
+    ylab(t2) +
+    facet_wrap(~study)
+  return(g)
+}
