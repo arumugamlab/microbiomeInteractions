@@ -22,6 +22,10 @@
 #' }
 calculate_pairwise_1 <- function(x, .parallel = FALSE) {
   
+  # Convert into 0-1 presence/absence matrix, since that's all we need
+  
+  x[x>0] <- 1
+  
   # Estimate p_i
   
   n_species <- dim(x)[1]
@@ -180,7 +184,6 @@ get_co_dependencies <- function(pairwise_df) {
 
 ######## Co-exclusions --------------------------------------------------------
 
-
 #################
 # Co-exclusion relationships
 #################
@@ -255,7 +258,7 @@ get_top_exclusions <- function(study_list, exclusion_df_list, min_log2DEP = -2) 
     df$log2DEP <- log2(p_ij)-log2(df$p_i_TIMES_p_j)
     
     top <- df %>% 
-            filter(log2DEP < -2) %>% 
+            filter(log2DEP < min_log2DEP) %>% 
             arrange(log2DEP, desc(p_i_TIMES_p_j)) %>%
             select(s_i, s_j, p_i, p_j, log2DEP, p_i_AND_j)
     
@@ -346,7 +349,7 @@ get_overlapping_exclusions <- function(study_list, exclusion_df_list, exclusion_
   
   indices_i <- offset+ ((1:n)-1)*n_cols + 1
   overlap$geo_mean_i <- overlap %>% 
-                          select(indices_i) %>% 
+                          select(all_of(indices_i)) %>% 
                           apply(., 1, function(x) {
                             y = x[!is.na(x)]; 
                             exp(sum(log(y))/length(y))
@@ -354,7 +357,7 @@ get_overlapping_exclusions <- function(study_list, exclusion_df_list, exclusion_
   
   indices_j <- offset+ ((1:n)-1)*n_cols + 2
   overlap$geo_mean_j <- overlap %>% 
-                          select(indices_j) %>% 
+                          select(all_of(indices_j)) %>% 
                           apply(., 1, function(x) {
                             y = x[!is.na(x)]; 
                             exp(sum(log(y))/length(y))
@@ -366,14 +369,14 @@ get_overlapping_exclusions <- function(study_list, exclusion_df_list, exclusion_
   #       non-NA elements.
   
   overlap$n_exclusions <- overlap %>% 
-                            select(indices_i) %>% 
+                            select(all_of(indices_i)) %>% 
                             apply(., 1, function(x) {sum(!is.na(x))})
   
   # Calculate mean for p(s_i & s_j) across studies
   
   indices_ij <- offset+ ((1:n)-1)*n_cols + 3
   overlap$mean_ij <- overlap %>% 
-                      select(indices_ij) %>% 
+                      select(all_of(indices_ij)) %>% 
                       apply(., 1, function(x) {mean(x, na.rm = TRUE)})
   
   # Calculate score for p(s_i & s_j) across studies
@@ -395,15 +398,17 @@ get_overlapping_exclusions <- function(study_list, exclusion_df_list, exclusion_
   # Calculate a score, which is the sum of log2DEP and log(dbinom)
   #########################################################################
   overlap$score <- overlap %>% 
-                    select(indices_dep) %>% 
+                    select(all_of(indices_dep)) %>% 
                     apply(., 1, function(x) {sum(x, na.rm=TRUE)})
   overlap <- overlap %>% 
-              mutate(score = -score/n_exclusions-log2(pbinom(n_exclusions-1, n, exclusion_prob, lower.tail = FALSE)))
-  
-  overlap <- overlap %>% 
+              mutate(
+                p_binomial = pbinom(n_exclusions-1, n, exclusion_prob, lower.tail = FALSE),
+                score = -score/n_exclusions-log2(p_binomial)
+                )
+  overlap <- overlap %>%
               filter(n_exclusions >= min_exclusions) %>% 
               select(-ends_with("log2Dep")) %>%
-              select(species_i, species_j, score, n_exclusions, mean_ij, geo_mean_i, geo_mean_j, everything()) %>%
+              select(species_i, species_j, score, n_exclusions, p_binomial, mean_ij, geo_mean_i, geo_mean_j, everything()) %>%
               arrange(desc(score), desc(n_exclusions), species_i, species_j) #%>% filter(p_i.geo_mean > threshold)
   
   return(overlap)
