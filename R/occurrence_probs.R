@@ -8,12 +8,13 @@
 #' Calculate pairwise co-occurrence relationship between entities in one dataframe.
 #'
 #' @param x          dataframe with entities in rows and sample in columns
-#' @param .parallel  if TRUE, run aaply function in parallel, using aaply/foreach
+#' @param .parallel  if TRUE, run analysis in parallel, using foreach and \%dopar\%
 #'
 #' @return dataframe containing pairwise occurrence statistics
 #' @export
 #' 
-#' @importFrom plyr aaply
+#' @importFrom foreach foreach %dopar%
+#' @importFrom bit bitwhich
 #'
 #' @examples
 #' \dontrun{
@@ -22,34 +23,48 @@
 #' }
 calculate_pairwise_1 <- function(x, .parallel = FALSE) {
   
-  # Convert into 0-1 presence/absence matrix, since that's all we need
-  
-  x[x>0] <- 1
-  
   # Estimate p_i
   
-  n_species <- dim(x)[1]
-  #n_species <- 57
-  n_samples <- dim(x)[2]
-  p_i       <- rowSums(x) / n_samples
+  n_features <- dim(x)[1]
+  n_samples  <- dim(x)[2]
+  p_i        <- rowSums(x>0) / n_samples
   
   # Start comparisons
+  # NOTE / WARNING: I switched to bitwhich objects from "bit" package for speed. This affects how parallelization works.
+  #                 If encoding happens in the main thread, worker threads do not interpret the encodings the same.
+  #                 This leads to errors in computing overlaps in i_and_j. Therefore, I let the worker threads do their own
+  #                 encoding, even though they all encode the full matrix repeatedly. But this keeps it accurate, so worth doing.
+  #                 Even with this overhead, this is extremely fast, so double worth it!
+
+  # Count the number of times two features co-occur in the samples
+  if (.parallel) {
+    i_and_j <- foreach (f1=1:(n_features-1), .combine = "c", .packages = c("bit")) %dopar% 
+      {
+        # Create lists of bitwhich
+        # For each feature in x, one bitwhich is created where values above 0 are TRUE and others are FALSE
+        
+        b1 <- bitwhich(n_samples, which(x[f1,]>0));
+        y_bitwhich <- apply(X=x, MARGIN=1, FUN=function(row_data, n_items) { return(bitwhich(n_items, which(row_data > 0)))}, simplify=FALSE, n_items=n_samples);
+        sapply((f1+1):n_features, function(f2) {sum(b1 & y_bitwhich[[f2]])})
+      }
+  } else {
+    i_and_j <- foreach (f1=1:(n_features-1), .combine = "c", .packages = c("bit")) %do% 
+      {
+        b1 <- bitwhich(n_samples, which(x[f1,]>0));
+        y_bitwhich <- apply(X=x, MARGIN=1, FUN=function(row_data, n_items) { return(bitwhich(n_items, which(row_data > 0)))}, simplify=FALSE, n_items=n_samples);
+        sapply((f1+1):n_features, function(f2) {sum(b1 & y_bitwhich[[f2]])})
+      }
+  }
+  # Convert counts to probabilities
+  i_and_j <- i_and_j / n_samples
   
-  # Make all combinations of species, and then estimate their co-occurrence probabilities
-  combinations <- t(combn(n_species, m = 2))
-  
-  # following is the same as apply, but using plyr::aaply helps in progress bar
-  i_and_j <- plyr::aaply(combinations, 
-                         1, 
-                         function(pair) {
-                           sum(x[pair[1], ] & x[pair[2], ]) / n_samples
-                         },
-                         .parallel = .parallel,
-                         .progress = "text")
   
   # Prepare results
   
   tmp_names <- rownames(x)
+  
+  # Make all combinations of species, and then estimate their co-occurrence probabilities
+  combinations <- t(combn(n_features, m = 2))
   
   df <- data.frame(i = combinations[ ,2], 
                    j = combinations[ ,1], 
@@ -65,6 +80,7 @@ calculate_pairwise_1 <- function(x, .parallel = FALSE) {
 }
 
 
+
 ################################
 ## Estimate cooccurrences from 2 dataframes
 ################################
@@ -73,12 +89,13 @@ calculate_pairwise_1 <- function(x, .parallel = FALSE) {
 #'
 #' @param x    1st dataframe with entities in rows and sample in columns
 #' @param y    2nd dataframe with entities in rows and sample in columns
-#' @param .parallel if TRUE, run aaply function in parallel, using aaply/foreach
+#' @param .parallel if TRUE, run analysis in parallel, using foreach and \%dopar\%
 #'
 #' @return dataframe containing pairwise occurrence statistics
 #' @export
 #' 
-#' @importFrom plyr aaply
+#' @importFrom foreach foreach %dopar%
+#' @importFrom bit bitwhich
 #'
 #' @examples
 #' \dontrun{
@@ -106,44 +123,65 @@ calculate_pairwise_2 <- function(x, y, .parallel = FALSE) {
   
   n_feature1 <- dim(x)[1]
   n_feature2 <- dim(y)[1]
-  #n_feature1 <- 57
-  #n_feature2 <- 57
   n_samples  <- dim(x)[2]
-  p_i        <- rowSums(x) / n_samples
-  p_j        <- rowSums(y) / n_samples
+  
+  p_i        <- rowSums(x>0) / n_samples
+  p_j        <- rowSums(y>0) / n_samples
   
   # Start comparisons
+  # NOTE / WARNING: I switched to bitwhich objects from "bit" package for speed. This affects how parallelization works.
+  #                 If encoding happens in the main thread, worker threads do not interpret the encodings the same.
+  #                 This leads to errors in computing overlaps in i_and_j. Therefore, I let the worker threads do their own
+  #                 encoding, even though they all encode the full matrix repeatedly. But this keeps it accurate, so worth doing.
+  #                 Even with this overhead, this is extremely fast, so double worth it!
   
+  # Count the number of times two features co-occur in the samples
+  if (.parallel) {
+    i_and_j <- foreach (f1=1:n_feature1, .combine = "c", .packages = c("bit")) %dopar% 
+        {
+          # Create lists of bitwhich
+          # For each feature in x, one bitwhich is created where values above 0 are TRUE and others are FALSE
+          
+          b1 <- bitwhich(n_samples, which(x[f1,]>0));
+          y_bitwhich <- apply(X=y, MARGIN=1, FUN=function(row_data, n_items) { return(bitwhich(n_items, which(row_data > 0)))}, simplify=FALSE, n_items=n_samples);
+          sapply(1:n_feature2, function(f2) {sum(b1 & y_bitwhich[[f2]])})
+        }
+  } else {
+    i_and_j <- foreach (f1=1:n_feature1, .combine = "c", .packages = c("bit")) %do% 
+        {
+          b1 <- bitwhich(n_samples, which(x[f1,]>0));
+          y_bitwhich <- apply(X=y, MARGIN=1, FUN=function(row_data, n_items) { return(bitwhich(n_items, which(row_data > 0)))}, simplify=FALSE, n_items=n_samples);
+          sapply(1:n_feature2, function(f2) {sum(b1 & y_bitwhich[[f2]])})
+        }
+  }
+  # Convert counts to probabilities
+  i_and_j <- i_and_j / n_samples
+  
+  # Prepare results
+  
+  names_i <- rownames(x)
+  names_j <- rownames(y)
+
   # Make all combinations of species, and then estimate their co-occurrence probabilities
   
   ilist <- seq_len(n_feature1)
   jlist <- seq_len(n_feature2)
   
-  combinations <- as.matrix(expand.grid(ilist, jlist))
-
-  # following is the same as apply, but using plyr::aaply helps in progress bar
-  i_and_j <- plyr::aaply(combinations, 
-                         1, 
-                         function(pair) {
-                           sum(x[pair[1], ] & y[pair[2], ]) / n_samples
-                         },
-                         .parallel = .parallel,
-                         .progress = "text")
+  # expand.grid: first factor varies fastest.
+  # calculation above: first factor is stable and 2nd factor varies 1:n
+  # therefore, we do some switching around that might not sound logical.
   
-  # Prepare results
+  combinations <- as.matrix(expand.grid(jlist, ilist))
   
-  tmp_names_i <- rownames(x)
-  tmp_names_j <- rownames(y)
-  
-  df <- data.frame(i = combinations[ ,1], 
-                   j = combinations[ ,2], 
+  df <- data.frame(i = combinations[ ,2], 
+                   j = combinations[ ,1], 
                    p_i_AND_j = i_and_j)
-  df$s_i <- tmp_names_i[df$i]
-  df$s_j <- tmp_names_j[df$j]
   df$p_i <- p_i[df$i]
   df$p_j <- p_j[df$j]
+  df$s_i <- names_i[df$i]
+  df$s_j <- names_j[df$j]
   df <- df %>% 
-    mutate(p_i_TIMES_p_j = p_i * p_j)
+        mutate(p_i_TIMES_p_j = p_i * p_j)
   
   return(df)
 }
