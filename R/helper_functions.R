@@ -1,15 +1,96 @@
+################################
+## Process two phyloseq objects
+################################
+
+#' Process two phyloseq objects for pairwise co-occurrence statistics
+#'
+#' @param p1             1st phyloseq object
+#' @param p2             2nd phyloseq object
+#' @param .parallel      if TRUE, run multithreading
+#'
+#' @return list(integer, dataframe) containing number of taxa and pairwise occurrence statistics
+#' @export
+#' 
+#' @importFrom phyloseq tax_table otu_table prune_taxa
+#'
+#' @examples
+#' \dontrun{
+#' pairwise_res <- process_phyloseq_for_pairwise_interactions(ps_list[["ZellerG_2014"]])
+#' }
+process_two_phyloseqs_for_pairwise_interactions <- function(p1, p2, .parallel = FALSE) {
+
+  if (!requireNamespace("phyloseq", quietly = TRUE)) {
+    stop("Package \"phyloseq\" needed for this function to work. Please install it.",
+         call. = FALSE)
+  }
+  
+  # Sanity check
+  
+  if ( !identical(row.names(sample_data(p1)), row.names(sample_data(p2))) ) {
+    stop("Function \"calculate_pairwise_2\" needs two data frames with same samples in columns. Please fix it.",
+         call. = FALSE)
+  }
+
+  
+  # Process the first phyloseq object
+  
+  # Prepare otu_table
+  
+  x <- as.data.frame(otu_table(p1))
+  
+  # CMD has species as rows and samples as columns.
+  # calculate_pairwise() assumes this mode, so need to transpose() if that's not the case
+  
+  if (!taxa_are_rows(p1)) {
+    x <- t(x)
+  }
+  
+  # If this contains taxonomic features
+  # Assign useful taxa names for x
+  
+  if (length(grep("tax_table", getslots.phyloseq(p1), fixed = TRUE)) > 0) {
+    t <- tax_table(p1)
+    rownames(x) <- paste0(t[,"phylum"], "::", t[,"species"])
+  }
+  
+  # Process the 2nd phyloseq object
+  
+  # Prepare otu table
+  
+  y <- as.data.frame(otu_table(p2))
+
+  # CMD has species as rows and samples as columns.
+  # calculate_pairwise() assumes this mode, so need to transpose() if that's not the case
+  
+  if (!taxa_are_rows(p2)) {
+    y <- t(y)
+  }
+  
+  # If this contains taxonomic features
+  # Assign useful taxa names for y
+  
+  if (length(grep("tax_table", getslots.phyloseq(p2), fixed = TRUE)) > 0) {
+    t <- tax_table(p2)
+    rownames(y) <- paste0(t[,"phylum"], "::", t[,"species"])
+  }
+  
+  return(calculate_pairwise_2(x, y, .parallel = .parallel))
+
+}
+
+
 ######## phyloseq object processing -------------------------------------------
 
 ################################
 ## Process one phyloseq object
 ################################
 
-#' Process one phyloseq object for pairwise co-occurrence statistiss
+#' Process one phyloseq object for pairwise co-occurrence statistics
 #'
 #' @param p              phyloseq object
-#' @param .parallel      if TRUE, run aaply function in parallel, using aaply/foreach
+#' @param .parallel      if TRUE, run multithreading
 #'
-#' @return list(integer, dataframe) containing number of taxapairwise occurrence statistics
+#' @return list(integer, dataframe) containing number of taxa and pairwise occurrence statistics
 #' @export
 #' 
 #' @importFrom phyloseq tax_table otu_table prune_taxa
@@ -46,7 +127,7 @@ process_phyloseq_for_pairwise_interactions <- function(p, .parallel = FALSE) {
   
   rownames(x) <- paste0(t[,"phylum"], "::", t[,"species"])
   
-  # Make sure that there isnt any invalid data. THis happens in DN-metaHIT in CRC-meta
+  # Make sure that there isn't any invalid data. This happens in DN-metaHIT in CRC-meta
   
   valid_samples = which(!is.na(colSums(x)))
   x <- x[ , valid_samples]
@@ -64,10 +145,12 @@ process_phyloseq_for_pairwise_interactions <- function(p, .parallel = FALSE) {
 #' Process a list of phyloseq objects for pairwise co-occurrence statistics
 #'
 #' @param study_list  list of study names
-#' @param ps_list     list of phyloseq objects that must contain at least the 
+#' @param ps_list_1   1st list of phyloseq objects that must contain at least the 
+#'                    studies in \code{study_list}
+#' @param ps_list_2   Optional 2nd list of phyloseq objects that must contain at least the 
 #'                    studies in \code{study_list}
 #' @param min_log2DEP minimum log2DEP needed for an interaction to be included
-#' @param .parallel   if TRUE, run aaply function in parallel, using aaply/foreach
+#' @param .parallel   if TRUE, run multithreading
 #'
 #' @return list of 2 elements: containing list(exclusions) and list(dependencies)
 #' @export
@@ -82,14 +165,18 @@ process_phyloseq_for_pairwise_interactions <- function(p, .parallel = FALSE) {
 #'   equivalent[[study]] <- tmp_results[[2]][[study]]
 #' }
 #' }
-process_phyloseq_study_list <- function(study_list, ps_list, min_log2DEP = 2, .parallel = FALSE) {
+process_phyloseq_study_list <- function(study_list, ps_list_1, ps_list_2 = NULL, min_log2DEP = 2, .parallel = FALSE) {
   
   my_exclusion  <- list()
   my_dependency <- list()
   
   for (name in study_list) {
     cat(paste("Processing Set:", name, "\n"))
-    pairwise_res <- process_phyloseq_for_pairwise_interactions(ps_list[[name]], .parallel = .parallel)
+    if (is.null(ps_list_2)) {
+      pairwise_res <- process_phyloseq_for_pairwise_interactions(ps_list_1[[name]], .parallel = .parallel)
+    } else {
+      pairwise_res <- process_two_phyloseqs_for_pairwise_interactions(ps_list_1[[name]], ps_list_2[[name]], .parallel = .parallel)  
+    }
     my_exclusion[[name]]  <- get_co_exclusions(pairwise_res, min_abs_log2DEP = abs(min_log2DEP))
     my_dependency[[name]] <- get_co_dependencies(pairwise_res)
   }
@@ -98,27 +185,93 @@ process_phyloseq_study_list <- function(study_list, ps_list, min_log2DEP = 2, .p
 
 
 ################################
-## Get prevalent taxa
+## Get prevalent features
 ################################
 
 #' Subset a phyloseq object with prevalent taxa 
 #'
 #' @param p phyloseq object
 #' @param min_prevalence minimum prevalence below which taxa will be removed
+#' @param min_occurrence minimum absolute occurrence below which feature will be removed (helps in smaller sample size)
 #'
 #' @return phyloseq object
 #' @export
 #'
 #' @examples
 #' \dontrun{
-#' get_prevalent_taxa_from_phyloseq(p, 0.01)
+#' get_prevalent_taxa_from_phyloseq(p)
+#' get_prevalent_taxa_from_phyloseq(p, 0.05, min_occurrence = 5)
 #' }
-get_prevalent_taxa_from_phyloseq <- function(p, min_prevalence) {
+get_prevalent_taxa_from_phyloseq <- function(p, min_prevalence = 0.01, min_occurrence = 1) {
   n_samples <- nsamples(p)
-  prev_taxa <- names(which((rowSums(as(otu_table(p), "matrix") != 0)/n_samples) > min_prevalence))
+  min_occurrence <- max(min_prevalence * n_samples, min_occurrence)
+  prev_taxa <- names(which((rowSums(as(otu_table(p), "matrix") != 0)) >= min_occurrence))
   return(prune_taxa(prev_taxa, p))
 }
 
+
+#' Subset a SummarizedExperiment object with prevalent features 
+#'
+#' @param se SummarizedExperiment object
+#' @param min_prevalence minimum prevalence below which feature will be removed
+#' @param min_occurrence minimum absolute occurrence below which feature will be removed (helps in smaller sample size)
+#'
+#' @return SummarizedExperiment object
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' get_prevalent_feature_from_summarized_experiment(se)
+#' get_prevalent_feature_from_summarized_experiment(se, 0.05, min_occurrence = 5, resource_name = "gene_families")
+#' }
+get_prevalent_features_from_summarized_experiment <- function(se, min_prevalence = 0.01, min_occurrence = 10, resource_name = "gene_families") {
+  n_samples <- dim(se)[2]
+  min_occurrence <- max(min_prevalence * n_samples, min_occurrence)
+  prev_features <- which((rowSums(assays(se)[[resource_name]] != 0)) >= min_occurrence)
+  return(se[prev_features, , drop = FALSE])
+}
+
+################################
+## Remove invariant features
+################################
+
+#' Subset a phyloseq object to remove near-invariant taxa 
+#'
+#' @param p phyloseq object
+#' @param max_prevalence maximum prevalence above which taxa will be removed
+#'
+#' @return phyloseq object
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' remove_invariant_taxa_from_phyloseq(p, 0.99)
+#' }
+remove_invariant_taxa_from_phyloseq <- function(p, max_prevalence = 1.0) {
+  n_samples <- nsamples(p)
+  max_occurrence <- max_prevalence * n_samples
+  prev_taxa <- names(which((rowSums(as(otu_table(p), "matrix") != 0)) < max_occurrence))
+  return(prune_taxa(prev_taxa, p))
+}
+
+#' Subset a SummarizedExperiment object to remove near-invariant features 
+#'
+#' @param se SummarizedExperiment object
+#' @param max_prevalence maximum prevalence above which features will be removed
+#'
+#' @return SummarizedExperiment object
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' remove_invariant_features_from_summarized_experiment(se, 0.99)
+#' }
+remove_invariant_features_from_summarized_experiment <- function(se, max_prevalence = 1.0, resource_name = "gene_families") {
+  n_samples <- dim(se)[2]
+  max_occurrence <- max_prevalence * n_samples
+  prev_features <- which((rowSums(assays(se)[[resource_name]] != 0)) < max_occurrence)
+  return(se[prev_features, , drop = FALSE])
+}
 
 ################################
 ## Get one rank
