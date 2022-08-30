@@ -133,8 +133,6 @@ process_phyloseq_for_pairwise_interactions <- function(p, .parallel = FALSE) {
   x <- x[ , valid_samples]
   
   return(calculate_pairwise_1(x, .parallel = .parallel))
-  #return(calculate_pairwise_2(x, x))
-  
 }
 
 
@@ -171,12 +169,16 @@ process_phyloseq_study_list <- function(study_list, ps_list_1, ps_list_2 = NULL,
   my_dependency <- list()
   
   for (name in study_list) {
-    cat(paste("Processing Set:", name, "\n"))
+    t_start <- Sys.time()
     if (is.null(ps_list_2)) {
+      cat(paste("Processing dataset '", name, "' with", nsamples(ps_list_1[[name]]), "samples and", ntaxa(ps_list_1[[name]]), "features\n"))
       pairwise_res <- process_phyloseq_for_pairwise_interactions(ps_list_1[[name]], .parallel = .parallel)
     } else {
+      cat(paste("Processing dataset '", name, "' with", nsamples(ps_list_1[[name]]), "samples and", ntaxa(ps_list_1[[name]]), "vs", ntaxa(ps_list_2[[name]]), "features\n"))
       pairwise_res <- process_two_phyloseqs_for_pairwise_interactions(ps_list_1[[name]], ps_list_2[[name]], .parallel = .parallel)  
     }
+    t_run <- Sys.time() - t_start
+    cat(paste("   Time taken:", format(t_run, tz="UTC"), "\n"))
     my_exclusion[[name]]  <- get_co_exclusions(pairwise_res, min_abs_log2DEP = abs(min_log2DEP))
     my_dependency[[name]] <- get_co_dependencies(pairwise_res)
   }
