@@ -27,10 +27,9 @@ Metagenome datasets from **curatedMetagenomicData (CMD)** can be converted into 
 library(curatedMetagenomicData)
 library(dplyr)
 library(DT)
-library(mia)
 
-#source("../R/helper_functions.R")
-#source("../R/occurrence_probs.R")
+source("../R/helper_functions.R")
+source("../R/occurrence_probs.R")
 
 download_data = FALSE
 run_analysis = FALSE
@@ -59,6 +58,7 @@ resource_name <- "relative_abundance"
 filename <- paste("taxa_ps_list", paste0(dim(studies)[1], "samples"), resource_name, "Rda", sep=".")
 
 if (download_data == TRUE) {
+    library(mia)
     taxa_ps_list <- list()
     for (name in studies$study_name) {
       tse <- curatedMetagenomicData(paste(name, resource_name, sep="."), dryrun = FALSE, counts = FALSE, rownames = "short") %>%
@@ -80,14 +80,14 @@ This resulted in the following list of `r length(name_list)` datasets with at le
 datatable(studies)
 ```
 
-# Identify co-exclusion and co-dependency relationships between pairs of microbes
+# Identify co-exclusion relationships between pairs of microbes
 
 We now look for co-exclusion relationships between microbes in different datasets using occurrence probabilities of individual microbes and joint probabilities of them occurring together. 
 
 First, let us source the **microbiomeInteractions** package, and other packages it depends on.
 
 ```{r setup}
-library(microbiomeInteractions)
+#library(microbiomeInteractions)
 library(phyloseq)
 library(plyr)
 library(dplyr)
@@ -106,7 +106,7 @@ for (study in name_list) {
 
 Now we have `r summ` samples in the entire analysis.
 
-The **phyloseq** objects from **CMD** will also contain all taxa detected in each dataset. Our occurrence-probability-based analysis will not be accurate in rarely occurring taxa (not low abundance, but low prevalence), as their occurrence probabilities will have very high errors. Therefore, it is better to pick taxa based on some prevalence criterion. Here, we will use `r min_prev_percent`% prevalence in a given dataset. Each **phyloseq** object will go through this filter separately, so they may not have the same number of taxa. For example, the *WirbelJ_2018* dataset had `r ntaxa(taxa_ps_list[["WirbelJ_2018"]])` species before the filter.
+The **phyloseq** objects from **CMD** will also contain all taxa detected in each dataset. Our occurrence-probability-based analysis will not be accurate in rarely occurring taxa (not low abundance, but low prevalence), as their occurrence probabilities will have very high errors. Therefore, it is better to pick taxa based on some prevalence criterion. Here, we will use `r min_prev_percent`% prevalence in a given dataset. Each **phyloseq** object will go through this filter separately, so they may not have the same number of taxa. For example, the `WirbelJ_2018` dataset had `r ntaxa(taxa_ps_list[["WirbelJ_2018"]])` species before the filter.
 
 ```{r prepare-data-1}
 taxa_ps_list[["WirbelJ_2018"]]
@@ -128,7 +128,7 @@ taxa_ps_list_filtered[["WirbelJ_2018"]]
 
 ## Perform the analysis
 
-Now, we are ready to run our analysis. However, this analysis takes quite some time, so we will use parallel computing using **doParallel**.
+Now, we are ready to run our analysis. However, this analysis takes quite some time, so we will use parallel computing using `doParallel`.
 
 ```{r benchmark, echo = FALSE, eval = FALSE}
 library(doParallel)
@@ -144,26 +144,24 @@ replications=5
 Let us run the analysis on all `r length(taxa_ps_list_filtered)` samples.
 
 ```{r taxa-coexclusions, warning= FALSE, message = FALSE}
-filename = paste("taxa_results", paste0(length(name_list), "samples"), paste0(min_prev_percent, "prev"), "relative_abundance", "Rda", sep=".")
+filename = paste("taxa_pairwise", 
+                 paste0(length(name_list), "samples"), 
+                 paste0(min_prev_percent, "prev"), 
+                 "relative_abundance", 
+                 "Rda", 
+                 sep=".")
 if (run_analysis == TRUE) {
     library(doParallel)
     registerDoParallel()
     t_start <- Sys.time()
-    taxa_results <- process_phyloseq_study_list(name_list, taxa_ps_list_filtered, .parallel = TRUE)
+    taxa_pairwise <- process_phyloseq_study_list(name_list, taxa_ps_list_filtered, min_log2DEP = 0, .parallel = TRUE)
     t_run <- Sys.time() - t_start
     cat(paste("Total processing took", format(t_run, tz="UTC"), "\n"))
-    save(taxa_results, file = filename)
+    save(taxa_pairwise, file = filename)
 } else {
     load(filename)
 }
 
-exclusion <- list()
-dependency <- list()
-
-for (study in name_list) {
-  exclusion[[study]]  <- taxa_results[["exclusion"]][[study]]
-  dependency[[study]] <- taxa_results[["dependency"]][[study]]
-}
 ```
 
 
@@ -172,22 +170,43 @@ for (study in name_list) {
 Let us take a quick peek at the results:
 
 ```{r taxa-peek-df}
-exclusion[["WirbelJ_2018"]] %>%
+taxa_pairwise[["WirbelJ_2018"]] %>%
+  mutate(log2DEP = as.character(round(log2DEP, 4))) %>%
   head %>%
-  datatable %>%
-  formatRound(columns=c("p_i", "p_j", "p_i_AND_j", "p_i_TIMES_p_j", "log2DEP"), digits=4)
+  datatable(
+    caption = htmltools::tags$caption(
+      style = 'caption-side: bottom; text-align: center;',
+      "Top 6 co-exclusions from the", htmltools::code("WirbelJ_2018"), " dataset"
+      )
+    ) %>%
+  formatRound(columns=c("p_i", "p_j", "p_i_AND_j", "p_i_TIMES_p_j"), digits=4)
+  
 ```
 
-The full list is quite long, with `r dim(exclusion[["WirbelJ_2018"]])[1]` exclusions. $s_i$ and $s_j$ are the two microbes who exhibit a co-exclusion pattern (columns `s_i` and `s_j`). They occur at $p_i$ and $p_j$ probabilities, respectively, in this dataset. These probabilities are given in columns `p_i` and `p_j`. Co-exclusion is inferred because even though their expected joint probability $p_i \times p_j$ is non-zero (in column `p_i_TIMES_p_j`), they never co-occur as seen by the real joint probability $p_{ij}$ (in column `p_i_AND_j`). This breaks the independence assumption towards the direction that they potentially exclude each other. The column `log2DEP` is derived from the independence measure defined as: $$\log_2\left(\frac{p_i \times p_j}{p_{ij}}\right)$$
+The full list is quite long, with `r dim(exclusion[["WirbelJ_2018"]])[1]` exclusions. $s_i$ and $s_j$ are the two microbes who exhibit a co-exclusion pattern (columns `s_i` and `s_j`). They occur at $p_i$ and $p_j$ probabilities, respectively, in this dataset. These probabilities are given in columns `p_i` and `p_j`. If their individual occurrences are independent from each other, the expected probability that they both occur in a sample is then given by the joint probability $p_i \times p_j$. We have also counted how often they actually occur together, $p_{ij}$, which we can compare against $p_i \times p_j$ to see whether they are indeed independent from each other.
 
-As we can see, the top excusions show $-\infty$ for `log2DEP`. This is due to the equality $p_{ij}=0$. This somehow hides the differences in the expected joint probabilites $p_i \times p_j$, which can be used to prioritize this list.
+```{r visualize-dependence-1, fig.width = 5, fig.asp = 1, fig.cap = "Comparing expected and actual co-occurrence probabilities",}
+
+ggplot(taxa_pairwise$WirbelJ_2018, aes(x=p_i_AND_j, y=p_i_TIMES_p_j, )) + 
+  geom_point(alpha=0.05) + 
+  geom_function(fun=function(x){2*x}) +
+  geom_function(fun=function(x){x/2}) +
+  geom_smooth(formula = y~x, color="red", se=TRUE, level=0.9999) +
+  ylim(0,1)
+
+```
+
+Based on how different $p_{ij}$ and $p_i \times p_j$ are, we can infer lack of independence between two species. E.g., co-exclusion can be inferred if even though their expected joint probability $p_i \times p_j$ is non-zero (in column `p_i_TIMES_p_j`), they never co-occur as seen by the real joint probability $p_{ij}$ (in column `p_i_AND_j`). This breaks the independence assumption towards the direction that they potentially exclude each other. The column `log2DEP` is derived from the independence measure defined as: 
+$$log2DEP = \log_2\left(\frac{p_i \times p_j}{p_{ij}}\right)$$
+
+As we can see, the top excusions show $-\infty$ for `log2DEP`. This is due to the equality $p_{ij}=0$. This somehow hides the differences in the expected joint probabilites $p_i \times p_j$, which can be used to prioritize this list. E.g., there is a difference between observing $p_{ij} = 0$ when $p_{ij}$ is expected to be `0.01` vs `0.4`, but we will not notice it while $p_{ij}$ is `0`.
 
 ## Prioritizing the co-exclusions
 
 Let us now prioritize co-exclusions using *get_top_exclusions()* based on a re-calculated `log2DEP` and prepare to compare the co-exclusions across datasets. The recalculated `log2DEP` uses a very low probability of $p_{ij}=2^{-15}$ for perfect mutual exclusions with $p_{ij}=0$.
 
 ```{r taxa-top-exc}
-top_exc <- get_top_exclusions(name_list, exclusion, min_log2DEP = -5)
+top_exc <- get_top_exclusions(name_list, taxa_pairwise, max_log2DEP = 10)
 ```
 
 Let's peek at these prioritized lists.
@@ -195,15 +214,20 @@ Let's peek at these prioritized lists.
 ```{r taxa-peek-top}
 top_exc[["WirbelJ_2018"]] %>%
   head %>%
-  datatable %>%
+  datatable(
+    caption = htmltools::tags$caption(
+      style = 'caption-side: bottom; text-align: center;',
+      "Top 6 co-exclusions from the", htmltools::code("WirbelJ_2018"), " dataset, now rescored"
+    )
+  ) %>%
   formatRound(columns=c("p_i", "p_j", "p_i_AND_j", "log2DEP"), digits=4)
 ```
 
 Even though $p_{ij}=0$ for all the exclusions shown above, their `log2DEP` can now be prioritized based on the expected joint probability $p_i \times p_j$.
 
-# Identifying co-exclusions occurring in multiple datasets
+## Identifying co-exclusions occurring in multiple datasets
 
-Now let us look for co-exclusions that occur in multiple datasets, which could give us more support that this could be a real co-exclusion. We can do that using *get_overlapping_exclusions()*, which calculates a co-exclusion strength **score** that combines (i) the mean `log2DEP` from these datasets, and (ii) binomial probability that the given pair co-exclude each other in at least $n_e$ (*n_exclusions*) out of $n$ datasets. The binomial probability estimated is: 
+Now let us look for co-exclusions that occur in multiple datasets, which could give us more support that this could be a real co-exclusion. We can do that using `get_overlapping_exclusions()`, which calculates a co-exclusion strength **score** that combines (i) the mean `log2DEP` from these datasets, and (ii) the probability that this much overlap happens by chance. For (ii), since we cannot calculate this exactly, we will approximate it with the binomial probability that the given pair co-exclude each other in at least $n_e$ (`n_exclusions`) out of $n$ datasets, when the background expectation of co-exclusion is $\pi$. The binomial probability estimated is: 
 $$\mathrm{P}(X \ge n_e) = {\tt pbinom}(n_e-1, n, \pi)$$ 
 This is equivalent to running a binomial test with similar parameters.
 
@@ -211,23 +235,23 @@ Occurrence frequencies from the individual datasets are also provided for refere
 
 For the score to work properly, background exclusion probability $\pi$ needs to be estimated for the datasets in focus. We can do that as follows:
 
-```{r taxa-background-probs}
-head(exclusion[["BackhedF_2015"]])
-taxa_ps_list_filtered[["BackhedF_2015"]]
+```{r taxa-background-exc-probs}
 exc <- c()
 for (study in name_list) {
-  n_e     <- dim(exclusion[[study]])[1]
+  n_e     <- sum(taxa_pairwise[[study]]$log2DEP == -Inf)
   n_total <- choose(ntaxa(taxa_ps_list_filtered[[study]]), 2)
   exc <- c(exc, n_e/n_total)
 }
-probs <- data.frame(study=name_list, exc_prob=exc)
-hist(probs$exc_prob)
+probs <- data.frame(study=name_list, n_samples = studies$n, exc_prob=exc)
+hist(probs$exc_prob, xlab = "probability", main = "Histogram of exclusion probabilities")
 ```
 
 Here are the study-specific exclusion probabilities:
 ```{r taxa-list-exc-probs}
 datatable(probs) %>%
-  formatRound(columns="exc_prob", digits=4)
+  formatRound(columns=c("exc_prob"), digits=4)
+plot(probs$n_samples, probs$exc_prob)
+cor.test(probs$n_samples, probs$exc_prob, method="spearman")
 ```
 
 Now let us estimate mean exclusion probability across studies.
@@ -235,36 +259,50 @@ Now let us estimate mean exclusion probability across studies.
 cat(paste("Ari. Mean: ", mean(as.numeric(probs$exc_prob)) , "\n"))
 cat(paste("Geo. Mean: ", exp(mean(log(as.numeric(probs$exc_prob)))) , "\n"))
 
-estimated_pi <- mean(as.numeric(probs$exc_prob))
+mean_exc <- mean(as.numeric(probs$exc_prob))
 ```
 
-The estimate for $\pi$ is `r estimated_pi`. Interestingly, the individual values in *probs* above are all around 0.3, suggesting that this could be a property of such datasets. For your own datasets, if you cannot estimate it, by default `get_overlapping_exclusions()` uses $\pi=0.3$, which we estimated from all the studies listed above.
+The estimate for $\pi$ is `r mean_exc`. For your own datasets, if you cannot estimate it, by default `get_overlapping_exclusions()` uses $\pi=0.3$, which we estimated from all the studies listed above.
 
 ```{r taxa-summarize}
-# Get overlapping exclusions found in at least 2 out of 3 studies.
+# Get overlapping exclusions found in at least 10 studies.
 
 global_overlap = get_overlapping_exclusions(name_list, 
                                             top_exc, 
                                             min_exclusions = 10,
-                                            exclusion_prob = estimated_pi,
+                                            exclusion_prob = mean_exc,
+                                            max_log2DEP = -5,
                                             duplicate_pairs = TRUE)
 ```
 
 ```{r taxa-display-summary}
+
+# Arrange by hitcount
+# species_order <- global_overlap %>%
+#   select(species_i, n_exclusions) %>%
+#   group_by(species_i) %>%
+#   summarize(n=sum(n_exclusions)) %>%
+#   arrange(desc(n))
+
 global_overlap %>%
-  select(species_i, species_j, score, n_exclusions, p_binomial, mean_ij, geo_mean_i, geo_mean_j) %>%
+  select(species_i, species_j, score, n_exclusions, n_observations, log10_p_binomial, mean_log2DEP, mean_ij, geo_mean_i, geo_mean_j) %>%
+  arrange(desc(score)) %>%
   datatable(
     filter = 'top',
     options = list(
       pageLength = 10,
       columnDefs = list(list(targets = c(2), searchable = FALSE))
+    ),
+    caption = htmltools::tags$caption(
+      style = 'caption-side: bottom; text-align: center;',
+      "Recurrent co-exclusions from all the datasets"
     )
   ) %>%
-  formatRound(columns=c("score", "mean_ij", "geo_mean_i", "geo_mean_j", "p_binomial"), digits=5)
+  formatRound(columns=c("score", "mean_ij", "geo_mean_i", "geo_mean_j", "log10_p_binomial", "mean_log2DEP"), digits=5)
 ```
 
 
-Now we get a prioritized list of co-exclusions that are scored. Mean $p_{ij}$ as well as geometric means of $p_i$ and $p_j$ are provided, to give us an idea of how they avoided each other given that they are expected to be seen together if they were independent. Some co-exclusions get support from all 3 datasets, but some only get support from 2. Individual $p_i$, $p_j$ and $p_{ij}$ are also provided for each dataset. Datasets without support for co-exclusion have `NA` for these individual values.
+Now we get a prioritized list of co-exclusions that are scored. Mean $p_{ij}$ as well as geometric means of $p_i$ and $p_j$ are provided, to give us an idea of how they avoided each other given that they are expected to be seen together if they were independent. Out of `n_observations` studies that `s_i` and `s_j` were seen together, co-exclusion is supported by `n_exclusions` studies. Some co-exclusions get support from nearly all datasets where they are observed, but some only get support from few. This gives us something like a p-value in `log10_p_binomial`. When they are co-excluding, the average co-exclusion strength is given by `mean_log2DEP`. Individual $p_i$, $p_j$ and $p_{ij}$ are also provided for each dataset in the `global_overlap` dataframe, but we do not show them here. Datasets without support for co-exclusion have `NA` for these individual values.
 
 Also note that each entry is kind of duplicated, as we set `duplicate_pairs` to `TRUE`. For each pair, there are two entries with `s_i` and `s_j` swapped. This is to make sure that counting the number of interactions for a given species is straighforward. If we did not duplicate, then to count the number of co-exclusions involving a given species, we would have to count its occurrence in both `s_i` and `s_j`. Now we can just pick one and count.
 
@@ -295,15 +333,19 @@ eur_overlap <- get_overlapping_exclusions(eur_studies,
                                             exclusion_prob = estimated_pi,
                                             duplicate_pairs = TRUE)
 eur_overlap %>%
-  select(species_i, species_j, score, n_exclusions, p_binomial, mean_ij, geo_mean_i, geo_mean_j) %>%
+  select(species_i, species_j, score, n_exclusions, n_observations, log10_p_binomial, mean_log2DEP, mean_ij, geo_mean_i, geo_mean_j) %>%
   datatable(
     filter = 'top',
     options = list(
       pageLength = 10,
       columnDefs = list(list(targets = c(2), searchable = FALSE))
+      ),
+    caption = htmltools::tags$caption(
+      style = 'caption-side: bottom; text-align: center;',
+      "Recurrent co-exclusions from the European datasets"
     )
   ) %>%
-  formatRound(columns=c("score", "mean_ij", "geo_mean_i", "geo_mean_j", "p_binomial"), digits=4)
+  formatRound(columns=c("score", "mean_ij", "geo_mean_i", "geo_mean_j", "log10_p_binomial", "mean_log2DEP"), digits=5)
 ```
 
 ### Co-exclusions in CRC studies
@@ -330,15 +372,20 @@ crc_overlap = get_overlapping_exclusions(crc_studies,
                                             duplicate_pairs = TRUE)
 
 crc_overlap %>%
-  select(species_i, species_j, score, n_exclusions, p_binomial, mean_ij, geo_mean_i, geo_mean_j) %>%
+  select(species_i, species_j, score, n_exclusions, n_observations, log10_p_binomial, mean_log2DEP, mean_ij, geo_mean_i, geo_mean_j) %>%
   datatable(
     filter = 'top',
     options = list(
       pageLength = 10,
       columnDefs = list(list(targets = c(2), searchable = FALSE))
+    ),
+    caption = htmltools::tags$caption(
+      style = 'caption-side: bottom; text-align: center;',
+      "Recurrent co-exclusions from the CRC datasets"
     )
+    
   ) %>%
-  formatRound(columns=c("score", "mean_ij", "geo_mean_i", "geo_mean_j", "p_binomial"), digits=4)
+  formatRound(columns=c("score", "mean_ij", "geo_mean_i", "geo_mean_j", "log10_p_binomial", "mean_log2DEP"), digits=5)
 ```
 
 We can also write these out as Excel files for easier look outside of R.
@@ -350,11 +397,11 @@ filename = paste("taxa.co_exclusions", paste0(length(name_list), "samples"), pas
 write_xlsx(to_write, path=filename)
 ```
 
-# Visualizing the co-exclusions
+## Visualizing the co-exclusions
 
 Let us visualize one of the top hits.
 
-```{r taxa-visualize-example1, fig.width = 10, fig.height = 9, fig.cap = "Co-exclusion pattern of two taxa observed in multiple datasets",eval = TRUE, echo = TRUE}
+```{r taxa-visualize-example1, fig.width = 10, fig.height = 9, fig.cap = "Co-exclusion pattern of two taxa observed in multiple datasets", eval = TRUE, echo = TRUE}
 library(ggplot2)
 
 t1="Dialister invisus"
@@ -367,7 +414,7 @@ This looks just like the patterns we are trying to capture: co-exclusions. You c
 
 Another example:
 
-```{r taxa-visualize-example2, fig.width = 10, fig.height = 9, fig.cap = "Co-exclusion pattern of two taxa observed in multiple datasets",eval = TRUE, echo = TRUE}
+```{r taxa-visualize-example2, fig.width = 10, fig.height = 9, fig.cap = "Co-exclusion pattern of two taxa observed in multiple datasets", eval = TRUE, echo = TRUE}
 library(ggplot2)
 
 t1="Blautia coccoides"
@@ -376,7 +423,7 @@ t2="Firmicutes bacterium CAG:95"
 plot_interaction_phyloseq(taxa_ps_list_filtered, t1, t2)
 ```
 
-```{r prevalent-species, exec = FALSE, echo = FALSE, eval = FALSE}
+```{r prevalent-species, echo = FALSE, eval = FALSE}
 library(tidyverse)
 prev_species <- c()
 for (study in name_list) {
@@ -394,3 +441,120 @@ x <- prev_species %>% table %>% as.data.frame
 colnames(x) <- c("species", "freq")
 ```
 
+# Identify co-dependence relationships between pairs of microbes
+
+Now let us investigate co-dependences between species. We can still use `log2DEP` to investigate this. When the actual co-occurrence of two microbes ($p_{ij}$) is higher than the expected co-occurrence under the independence assumption ($p_i \times p_j$), this may mean that the two species depend on each other. The magnitude of the difference could give us confidence on the dependence. We will use $log2DEP > 1$ as a criterion for now.
+
+```{r visualize-dependence-2, fig.width = 5, fig.asp = 1, fig.cap = "Comparing expected and actual co-occurrence probabilities",}
+library(ggplot2)
+hist(dependency$WirbelJ_2018$p_i_AND_j)
+ggplot(dependency$WirbelJ_2018, aes(x=p_i_OR_j, y=p_i_AND_j, )) + 
+  geom_point(alpha=0.05) + 
+  #geom_density_2d() +
+  geom_function(fun=function(x){x}) +
+  geom_function(fun=function(x){x/2}) +
+  geom_smooth(formula = y~poly(x,2), color="red", se=TRUE, level=0.9999) +
+  ylim(0,1)
+
+```
+
+Let us get the background probabilities for $log2DEP > 1$ in each dataset.
+```{r taxa-background-dep-probs}
+dep <- c()
+for (study in name_list) {
+  n_d     <- sum(exclusion[[study]]$log2DEP > 1 )
+  n_total <- choose(ntaxa(taxa_ps_list_filtered[[study]]), 2)
+  dep <- c(dep, n_d/n_total)
+}
+probs <- data.frame(study=name_list, n_samples = studies$n, dep_prob=dep)
+hist(probs$dep_prob, xlab = "probability", main = "Histogram of dependence probabilities")
+```
+
+Here are the study-specific dependence probabilities:
+```{r taxa-list-dep-probs}
+datatable(probs) %>%
+  formatRound(columns=c("dep_prob"), digits=4)
+```
+
+Let us see if there is a correlation between number of samples and dependencies.
+
+```{r taxa-dep-prob-correlation}
+plot(probs$n_samples, probs$dep_prob)
+cor.test(probs$n_samples, probs$dep_prob, method="spearman")
+```
+It does not seem to be correlated.
+
+Now let us estimate mean dependence probability across studies.
+```{r taxa-get-global-exc-prob}
+cat(paste("Ari. Mean: ", mean(as.numeric(probs$dep_prob)) , "\n"))
+cat(paste("Geo. Mean: ", exp(mean(log(as.numeric(probs$dep_prob)))) , "\n"))
+
+mean_dep <- mean(as.numeric(probs$dep_prob))
+```
+
+Using this, let us get overlapping dependencies as we obtained overlapping exclusions above.
+```{r taxa-depend, eval = FALSE, echo = FALSE, message = FALSE}
+top_dep <- get_top_dependencies(name_list, exclusion, min_log2DEP = 1)
+
+global_dep_overlap = get_overlapping_dependencies(name_list, 
+                                            top_dep, 
+                                            min_dependencies = 10,
+                                            min_log2DEP = 1,
+                                            dependence_prob = mean_dep,
+                                            duplicate_pairs = TRUE)
+
+```
+
+```{r taxa-depend-table, eval = FALSE, echo = FALSE, message = FALSE}
+global_dep_overlap %>%
+  select(species_i, species_j, score, n_dependencies, n_observations, log10_p_binomial, mean_log2DEP, geo_mean_ij, geo_mean_i, geo_mean_j) %>%
+  arrange(desc(score)) %>%
+  datatable(
+    filter = 'top',
+    options = list(
+      pageLength = 10,
+      columnDefs = list(list(targets = c(2), searchable = FALSE))
+    ),
+    caption = htmltools::tags$caption(
+      style = 'caption-side: bottom; text-align: center;',
+      "Recurrent co-dependencies from all the datasets"
+    )
+  ) %>%
+  formatRound(columns=c("score", "geo_mean_ij", "geo_mean_i", "geo_mean_j", "log10_p_binomial", "mean_log2DEP"), digits=5)
+
+```
+
+# Writing species connections out to create graphs
+
+A quick sanity check that a pair of species does not show up in both the exclusion list and the dependency list.
+
+```{r sanity-check-overlap}
+inner_join(global_overlap, global_dep_overlap, by=c("species_i", "species_j")) %>% dim
+
+```
+
+All good! Now let us write the pairs out!
+
+```{r write-connections-out}
+connections <- global_overlap %>%
+                select(species_i, species_j, score, log10_p_binomial, mean_log2DEP) %>%
+                mutate(score = -score)
+connections <- global_dep_overlap %>%
+                select(species_i, species_j, score, log10_p_binomial, mean_log2DEP) %>%
+                rbind( . , connections)
+
+x <- connections %>%
+   select(species_i, score) %>%
+   group_by(species_i) %>%
+   summarize(n=n()) %>%
+   arrange(desc(n))
+                
+write.table(connections, file="connections.tsv", sep="\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+
+# If we wanted a matrix
+y <- connections %>%
+  select(species_i, species_j, score) %>%
+  melt(id = c("species_i", "species_j")) %>%
+  acast(species_i ~ species_j)
+
+```
